@@ -184,8 +184,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/all — тегнуть всех из базы\n"
         "/refresh — подтянуть администраторов в базу\n"
-        "/start — информация\n"
-        "/help — эта справка"
+        "/help — эта справка\n"
+        "Новые участники в боте появляются после того, как они напишут хотя бы одно сообщение после добавления бота в чат."
     )
 
 
