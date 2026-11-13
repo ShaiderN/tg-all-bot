@@ -1,0 +1,2 @@
+python-telegram-bot>=20
+asyncpg>=0.29
