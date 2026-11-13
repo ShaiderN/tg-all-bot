@@ -1,5 +1,3 @@
-import asyncio
-import json
 import logging
 import os
 import threading
@@ -24,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 DATABASE_URL = os.environ.get("DATABASE_URL")
-DEFAULT_MEMBERS_FILE = "default_members.json"
 
 # Глобальный пул соединений с PostgreSQL
 db_pool: asyncpg.Pool | None = None
@@ -81,54 +78,6 @@ async def get_members(chat_id: int):
     return [(r["user_id"], r["username"], r["first_name"]) for r in rows]
 
 
-# ---------- Дефолтный список (без изменений) ----------
-def load_default_members() -> dict:
-    if not os.path.exists(DEFAULT_MEMBERS_FILE):
-        logger.warning(f"Файл {DEFAULT_MEMBERS_FILE} не найден — сидирование пропущено")
-        return {}
-    try:
-        with open(DEFAULT_MEMBERS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        total = sum(len(v) for v in data.values())
-        logger.info(f"Загружен дефолтный список: {total} участников в {len(data)} чатах")
-        return data
-    except Exception as e:
-        logger.error(f"Ошибка чтения {DEFAULT_MEMBERS_FILE}: {e}")
-        return {}
-
-
-async def seed_default_members() -> int:
-    """Подмешивает дефолтных участников в PostgreSQL, не удаляя существующих."""
-    defaults = load_default_members()
-    if not defaults:
-        return 0
-
-    processed = 0
-    async with db_pool.acquire() as conn:
-        for chat_id_str, members in defaults.items():
-            try:
-                chat_id = int(chat_id_str)
-            except ValueError:
-                logger.error(f"Некорректный chat_id в JSON: {chat_id_str}")
-                continue
-            for m in members:
-                uid = m.get("user_id")
-                if not uid:
-                    logger.warning(f"Пропущена запись без user_id: {m}")
-                    continue
-                await conn.execute("""
-                    INSERT INTO members (chat_id, user_id, username, first_name, last_name)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (chat_id, user_id) DO UPDATE SET
-                        username = COALESCE(EXCLUDED.username, members.username),
-                        first_name = COALESCE(EXCLUDED.first_name, members.first_name),
-                        last_name = COALESCE(EXCLUDED.last_name, members.last_name)
-                """, chat_id, uid, m.get("username"), m.get("first_name"), m.get("last_name"))
-                processed += 1
-    logger.info(f"Сидирование: обработано {processed} записей")
-    return processed
-
-
 # ---------- Отслеживание изменений ----------
 async def track_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_member = update.chat_member
@@ -167,8 +116,8 @@ async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not members:
         await update.message.reply_text(
-            "Список пуст. Заполните default_members.json и выполните /refresh, "
-            "либо попросите участников написать что-нибудь в чат."
+            "Список пуст. Попросите участников написать что-нибудь в чат "
+            "или выполните /refresh (подтянет администраторов)."
         )
         return
 
@@ -192,10 +141,8 @@ async def handle_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перечитывает default_members.json + подтягивает администраторов."""
+    """Подтягивает администраторов чата в базу."""
     chat_id = update.effective_chat.id
-
-    processed = await seed_default_members()
 
     admin_count = 0
     try:
@@ -210,7 +157,6 @@ async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
     members = await get_members(chat_id)
     await update.message.reply_text(
         f"✅ Обновлено.\n"
-        f"Из default_members.json обработано: {processed}.\n"
         f"Администраторов найдено: {admin_count}.\n"
         f"Всего в базе для этого чата: {len(members)}."
     )
@@ -221,15 +167,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "Бот для тегирования участников.\n\n"
             "1. Добавьте меня в группу, дайте права администратора.\n"
-            "2. Заполните default_members.json исходным списком.\n"
-            "3. Выполните /refresh — база пополнится из JSON и админами.\n"
-            "4. /all — тегнуть всех из базы.\n\n"
+            "2. Выполните /refresh — подтяну администраторов.\n"
+            "3. /all — тегнуть всех из базы.\n\n"
             "База также обновляется сама: по вступлениям/выходам и сообщениям."
         )
     else:
         msg = (
             "Бот добавлен! 🎉\n"
-            "/refresh — подтянуть список из default_members.json и админов.\n"
+            "/refresh — подтянуть администраторов чата.\n"
             "/all — тегнуть всех известных участников."
         )
     await update.message.reply_text(msg)
@@ -238,7 +183,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/all — тегнуть всех из базы\n"
-        "/refresh — перечитать default_members.json + подтянуть админов\n"
+        "/refresh — подтянуть администраторов в базу\n"
         "/start — информация\n"
         "/help — эта справка"
     )
@@ -266,8 +211,7 @@ def run_health_server():
 # ---------- Инициализация при старте ----------
 async def post_init(application: Application):
     await init_db()
-    await seed_default_members()
-    logger.info("База данных инициализирована, дефолтный список загружен")
+    logger.info("База данных инициализирована")
 
 
 async def post_shutdown(application: Application):
